@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Release tags only; every tag that matches here reaches the publish job below.
+    tags: ['v*']
+  pull_request:
+  # Weekly, so a new chemotion-api release that breaks the client contract is noticed even when
+  # nothing changes here (the client-latest job).
+  schedule:
+    - cron: '17 5 * * 1'
+
+jobs:
+  static-and-tests:
+    name: ruff + mypy + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and Python 3.14
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --group dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Type check (mypy)
+        run: uv run mypy chemotion_crate
+
+      # Integration tests (live Chemotion instance) are deselected by addopts in pyproject.toml.
+      - name: Offline tests
+        run: uv run pytest
+
+  conformance:
+    name: RO-Crate 1.2 conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and Python 3.14
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      # The validator runs on 3.13 in a throwaway env: its dependencies cannot build on 3.14.
+      - name: Install Python 3.13 (for the validator)
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --group dev
+
+      # Stage one, project environment (3.14): export the fixture model; no server needed.
+      # The second crate is exported with disclose_host=False.
+      - name: Export the fixture crates
+        run: |
+          uv run python scripts/export_conformance_crate.py conformance.eln
+          uv run python scripts/export_conformance_crate.py --withheld conformance-withheld.eln
+
+      # Stage two, separate 3.13 environment (--no-project).
+      # Two validator versions on purpose. 0.11.3 is what TheELNFileFormat's CI pins, and it is
+      # the STRICTER of the two here: it rejects a compact IRI whose prefix alone is declared,
+      # where 0.13.0 accepts it. Passing only the newer one let a crate through that their CI
+      # rejects. 0.13.0 is kept because it carries rules 0.11.3 does not have.
+      - name: Validate with roc-validator 0.11.3 + rocrate 0.15.1
+        run: |
+          for crate in conformance.eln conformance-withheld.eln; do
+            uv run --python 3.13 --no-project --with roc-validator==0.11.3 --with rocrate==0.15.1 \
+              python scripts/check_crate_conformance.py "$crate"
+          done
+
+      - name: Validate with roc-validator 0.13.0 + rocrate 0.15.1
+        run: |
+          for crate in conformance.eln conformance-withheld.eln; do
+            uv run --python 3.13 --no-project --with roc-validator==0.13.0 --with rocrate==0.15.1 \
+              python scripts/check_crate_conformance.py "$crate"
+          done
+
+  # Early warning: the client contract and the offline suite against the NEWEST chemotion-api on
+  # PyPI, ignoring the exact pin in pyproject.toml. A client release that drops or renames a name
+  # chemotion-crate relies on (tests/test_client_contract.py) shows up here before we move to it.
+  # It does not gate our own releases, which are pinned to the client they were tested with.
+  client-latest:
+    name: newest chemotion-api (contract + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and Python 3.14
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies, then the newest allowed chemotion-api
+        run: |
+          uv sync --locked --all-extras --group dev
+          uv pip install --upgrade "chemotion-api<500"
+          uv pip show chemotion-api | grep -i '^version'
+
+      - name: Client contract
+        run: uv run --no-sync pytest tests/test_client_contract.py
+
+      - name: Offline tests
+        run: uv run --no-sync pytest
+
+  build:
+    name: build sdist + wheel
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and Python 3.14
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      # Fail here, loudly, rather than at upload: PyPI rejects a re-upload of an existing version.
+      - name: Tag must match the project version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uv version --short)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag '${GITHUB_REF_NAME}' does not match pyproject version '${version}'"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches version ${version}"
+
+      - name: Build
+        run: uv build
+
+      - name: Check the distribution metadata
+        run: uvx twine check dist/*
+
+      - name: Import the built package
+        run: |
+          uv run --no-project --python 3.14 --with dist/*.whl python -c \
+            "import chemotion_crate; print('import OK', chemotion_crate.__name__)"
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  # PyPI trusted publishing (OIDC): no API token is stored anywhere. PyPI only accepts the upload
+  # if chemotion-crate lists this repository, this workflow file (ci.yml) and the `pypi`
+  # environment as a trusted publisher. Runs only once every other job has passed.
+  publish:
+    name: publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [static-and-tests, conformance, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/chemotion-crate/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+# NOTE: the live integration tests (tests/test_integration_live.py) are not run here. They need a
+# seeded Chemotion ELN stack; run them locally (CONTRIBUTING.md).
