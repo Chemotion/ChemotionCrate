@@ -241,3 +241,21 @@ def test_missing_path_is_neither(tmp_path):
 def test_source_id_accepts_only_ascii_digits(suffix, expected):
     ds = ElnDataset(None, {"@id": f"./samples/{suffix}/"})    # type: ignore[arg-type]
     assert ds.source_id == expected
+
+
+def test_a_member_swapped_for_a_symlink_after_opening_is_refused(tmp_path):
+    secret = tmp_path / "outside.txt"
+    secret.write_text("PRIVATE")
+    crate = tmp_path / "crate"
+    crate.mkdir()
+    (crate / "data.txt").write_text("payload")
+    (crate / "ro-crate-metadata.json").write_text(json.dumps(_metadata(extra=[
+        {"@id": "data.txt", "@type": "File"}])))
+    with ElnCrate(crate) as opened:
+        (crate / "data.txt").unlink()
+        try:
+            (crate / "data.txt").symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+        with pytest.raises(ValueError, match="outside the crate"):
+            opened.read_file("data.txt")

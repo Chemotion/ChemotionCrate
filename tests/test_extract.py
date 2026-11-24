@@ -322,6 +322,15 @@ def test_sample_cas_list_and_raw_ranges():
     assert rec.properties["boiling_point"] == "78"
 
 
+def test_a_null_cas_is_no_cas_number():
+    # The ELN sends `cas: [null]` for a molecule without one (chemotion-api keeps it since 402.0.0).
+    elem = FakeSample(1, molecule=FakeMolecule(2, cas=[None]))
+    rec = _extract(FakeCollection(1, "R", sample=[elem])).elements[0]
+    assert rec.molecule.cas == []
+    elem = FakeSample(1, molecule=FakeMolecule(2, cas=[None, "64-17-5"]))
+    assert _extract(FakeCollection(1, "R", sample=[elem])).elements[0].molecule.cas == ["64-17-5"]
+
+
 def test_unreadable_sample_amount_is_omitted():
     class _Sample(FakeSample):
         @property
@@ -801,20 +810,29 @@ def test_structured_segment_values_travel_as_json_not_python_repr():
 
 
 def test_an_unconvertible_amount_is_quiet_not_a_warning(caplog):
-    class Solid(FakeSample):
+    # A solid with only a mass has no volume: the client answers None, which is not an error.
+    elem = FakeSample(1, gram=1.0, liter=None)
+    with caplog.at_level("WARNING"):
+        rec = _extract(FakeCollection(1, "R", sample=[elem])).elements[0]
+    assert rec.mass_g == 1.0 and rec.volume_l is None
+    assert not [r for r in caplog.records if "could not read" in r.getMessage()]
+
+
+def test_an_amount_the_client_cannot_read_is_a_warning(caplog):
+    class Broken(FakeSample):
         @property
-        def liter(self):  # chemotion-api 401.1.1: TypeError with no density and no molarity
+        def liter(self):
             raise TypeError("unsupported operand type(s) for /: 'float' and 'NoneType'")
 
         @liter.setter
         def liter(self, _value):  # the fake's constructor sets it; the property ignores that
             pass
 
-    elem = Solid(1, gram=1.0)
+    elem = Broken(1, gram=1.0)
     with caplog.at_level("WARNING"):
         rec = _extract(FakeCollection(1, "R", sample=[elem])).elements[0]
     assert rec.mass_g == 1.0 and rec.volume_l is None
-    assert not [r for r in caplog.records if "could not read" in r.getMessage()]
+    assert [r for r in caplog.records if "could not read its liter" in r.getMessage()]
 
 
 def test_the_clients_synthetic_generic_element_class_is_not_queried():
@@ -852,3 +870,214 @@ def test_a_duration_given_as_value_and_unit_is_read(duration, expected):
     reaction = FakeElement(5, name="Ox", properties={"duration": duration},
                            starting_materials=[], reactants=[], products=[], solvents=[])
     assert _extract(FakeCollection(1, "R", reaction=[reaction])).elements[0].duration == expected
+
+
+# -- LabIMotion fields read from the raw field: select, select-multi, datetime-range -------------
+# Shapes as chem-generic-ui 2.3.2 stores them: a select-multi's choice in ``sub_fields`` as
+# ``[{value: <option key>}]``; a datetime range as four text sub-fields by ``col_name``.
+
+from chemotion_api.utils import parse_generic_object_json  # noqa: E402
+
+_OPTIONS = {"solvents": {"options": [{"key": "h2o", "label": "Water"}, {"key": "etoh", "label": "Ethanol"}]}}
+
+
+def _select_multi(field, label, *keys, position=1):
+    return {"type": "select-multi", "field": field, "label": label, "position": position,
+            "option_layers": "solvents", "value": "", "sub_fields": [{"value": k} for k in keys]}
+
+
+def _datetime_range(field, label, start="", stop="", duration="", unit="h", position=2):
+    subs = [{"type": "text", "col_name": "timeStart", "value": start},
+            {"type": "text", "col_name": "timeStop", "value": stop},
+            {"type": "text", "col_name": "durationCalc", "value": "should never be read"},
+            {"type": "text", "col_name": "duration", "value": duration,
+             "option_layers": "duration", "value_system": unit}]
+    return {"type": "datetime-range", "field": field, "label": label, "position": position,
+            "sub_fields": subs}
+
+
+def _generic_json(fields, **extra):
+    """A generic object's raw data, with ``select_options`` in the release only, as the ELN
+    saves an element."""
+    layers = {"run": {"key": "run", "label": "Run", "position": 1, "fields": fields}}
+    return {"properties": {"layers": layers},
+            "properties_release": {"layers": {}, "select_options": _OPTIONS}, **extra}
+
+
+def _parsed(data):
+    """The values the client's parser gives for ``data``: what ``elem.properties`` holds."""
+    return parse_generic_object_json(data)["values"]
+
+
+def test_generic_select_multi_and_datetime_range_values_are_read_from_the_raw_fields():
+    data = _generic_json([
+        {"type": "text", "field": "note", "label": "Solvents", "position": 1, "value": "dry"},
+        # Same label again: the client names it "Solvents.1"; matched by key, not label.
+        _select_multi("solv", "Solvents", "h2o", "etoh", "h2o", position=2),
+        _select_multi("other", "Other", "unknown_key", position=3),
+        _datetime_range("time", "Time", "24/11/2026 10:00:00", "24/11/2026 12:30:00", "2.5", "h",
+                        position=4),
+    ])
+    page = FakeElement(3, name="Page", properties=_parsed(data), json_data=data)
+    # The names the client gives; its values are not used (None before chemotion-api 402.0.0).
+    assert set(page.properties["Run"]) == {"Solvents", "Solvents.1", "Other", "Time"}
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [
+        {"name": "Run.Solvents", "value": "dry"},
+        {"name": "Run.Solvents.1", "value": "Water, Ethanol"},
+        {"name": "Run.Other", "value": "unknown_key"},  # no label in the template: the key
+        {"name": "Run.Time.timeStart", "value": "24/11/2026 10:00:00"},
+        {"name": "Run.Time.timeStop", "value": "24/11/2026 12:30:00"},
+        {"name": "Run.Time.duration", "value": "2.5", "unitText": "h"},
+    ]
+
+
+def test_empty_generic_select_multi_and_datetime_range_are_left_out():
+    data = _generic_json([_select_multi("solv", "Solvents"),
+                          {**_select_multi("none", "No sub-fields"), "sub_fields": None},
+                          _datetime_range("time", "Time"),
+                          _datetime_range("part", "Part", start="24/11/2026 10:00:00")])
+    page = FakeElement(3, name="Page", properties=_parsed(data), json_data=data)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [{"name": "Run.Part.timeStart", "value": "24/11/2026 10:00:00"}]
+
+
+def test_segment_select_multi_and_datetime_range_values_are_read_from_the_raw_segment():
+    data = _generic_json([_select_multi("solv", "Solvents", "etoh"),
+                          _datetime_range("time", "Time", stop="24/11/2026 12:30:00",
+                                          duration="90", unit="min"),
+                          _datetime_range("empty", "Empty", position=3)],
+                         id=7, segment_klass_id=2, klass_label="Workup")
+    other = _generic_json([_select_multi("solv", "Solvents", "h2o")],
+                          id=8, segment_klass_id=2, klass_label="Workup")
+    elem = FakeSample(1, json_data={"segments": [data, other]},
+                      segments={"Workup": _parsed(data), "Workup.1": _parsed(other)})
+    rec = _extract(FakeCollection(1, "R", sample=[elem])).elements[0]
+    assert rec.property_values == [
+        {"name": "Workup / Run / Solvents", "value": "Ethanol"},
+        {"name": "Workup / Run / Time.timeStop", "value": "24/11/2026 12:30:00"},
+        {"name": "Workup / Run / Time.duration", "value": "90", "unitText": "min"},
+        {"name": "Workup.1 / Run / Solvents", "value": "Water"},
+    ]
+
+
+def _select(field, label, key, position=1):
+    return {"type": "select", "field": field, "label": label, "position": position,
+            "option_layers": "solvents", "value": key}
+
+
+def test_select_and_select_multi_are_exported_alike_as_option_labels():
+    # The client gives a select's key; a client that parses select-multi gives keys as well.
+    data = _generic_json([_select("one", "Main solvent", "etoh"),
+                          _select("odd", "Odd", "no_label", position=2),
+                          _select_multi("solv", "Solvents", "h2o", "etoh", position=3)])
+    parsed = {"Run": {"Main solvent": "etoh", "Odd": "no_label", "Solvents": ["h2o", "etoh"]}}
+    page = FakeElement(3, name="Page", properties=parsed, json_data=data)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [{"name": "Run.Main solvent", "value": "Ethanol"},
+                                   {"name": "Run.Odd", "value": "no_label"},
+                                   {"name": "Run.Solvents", "value": "Water, Ethanol"}]
+    segment = _generic_json([_select("one", "Main solvent", "h2o")],
+                            id=7, segment_klass_id=2, klass_label="Workup")
+    elem = FakeSample(1, json_data={"segments": [segment]},
+                      segments={"Workup": {"Run": {"Main solvent": "h2o"}}})
+    rec = _extract(FakeCollection(1, "R", sample=[elem])).elements[0]
+    assert rec.property_values == [{"name": "Workup / Run / Main solvent", "value": "Water"}]
+
+
+def test_an_unset_select_is_left_out():
+    data = _generic_json([_select("one", "Main solvent", "")])
+    page = FakeElement(3, name="Page", properties={"Run": {"Main solvent": ""}}, json_data=data)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == []
+
+
+def test_withheld_sub_field_values_of_a_restricted_generic_element_are_left_out():
+    data = _generic_json([_select_multi("solv", "Solvents", "***", "h2o"),
+                          _datetime_range("time", "Time", "***", "24/11/2026 12:30:00")])
+    page = FakeElement(3, name="Page", properties=_parsed(data), json_data=data, is_restricted=True)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [{"name": "Run.Solvents", "value": "Water"},
+                                   {"name": "Run.Time.timeStop", "value": "24/11/2026 12:30:00"}]
+    assert rec.withheld == ["Run.Solvents", "Run.Time.timeStart"]
+
+
+def test_the_template_release_of_a_generic_element_and_its_segments_is_recorded():
+    release = {"uuid": "rel-2", "version": "1.2", "layers": {}}
+    segment = {"id": 7, "segment_klass_id": 2, "klass_label": "Workup", "klass_uuid": "seg-rel",
+               "properties": {"layers": {}}, "properties_release": {"uuid": "seg-rel", "version": "3.0"}}
+    page = FakeElement(3, name="Page", label="Lab notebook page",
+                       json_data={"klass_uuid": "rel-2", "properties_release": release,
+                                  "properties": {"layers": {}}, "segments": [segment]},
+                       segments={"Workup": {}})
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [
+        {"name": "Workup / template version", "value": "3.0"},
+        {"name": "Workup / template uuid", "value": "seg-rel"},
+        {"name": "template label", "value": "Lab notebook page"},
+        {"name": "template version", "value": "1.2"},
+        {"name": "template uuid", "value": "rel-2"},
+    ]
+
+
+def test_a_generic_element_without_its_template_label_is_still_exported():
+    class NoKlass(FakeElement):
+        @property
+        def label(self):  # the client's label reads element_klass, null below full detail level
+            raise AttributeError("'NoneType' object has no attribute 'get'")
+
+    page = NoKlass(3, name="Page", json_data={"klass_uuid": "rel-2"})
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [{"name": "template uuid", "value": "rel-2"}]
+
+
+def test_a_withheld_quantity_of_a_generic_element_leaves_no_bare_unit():
+    data = _generic_json([_datetime_range("time", "Time", "24/11/2026 10:00:00", "", WITHHELD, "h")])
+    page = FakeElement(3, name="Page", properties={"Run": {"Time": None, "Mass": {"value": WITHHELD, "unit": "g"}}},
+                       json_data=data, is_restricted=True)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [{"name": "Run.Time.timeStart", "value": "24/11/2026 10:00:00"}]
+    assert sorted(rec.withheld) == ["Run.Mass", "Run.Time.duration"]
+
+
+def test_withheld_sub_fields_are_named_not_dropped():
+    field = {**_select_multi("solv", "Solvents"), "sub_fields": WITHHELD}
+    data = _generic_json([field])
+    page = FakeElement(3, name="Page", properties=_parsed(data), json_data=data, is_restricted=True)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [] and rec.withheld == ["Run.Solvents"]
+
+
+def test_a_malformed_raw_field_leaves_the_clients_value_and_the_rest():
+    data = _generic_json([_select("one", "Main solvent", "etoh"),
+                          _select("bad", "Bad", {"not": "a key"}, position=2)])
+    data["properties"]["select_options"] = ["not", "a", "mapping"]
+    page = FakeElement(3, name="Page", properties={"Run": {"Main solvent": "etoh", "Bad": "kept"}},
+                       json_data=data)
+    rec = _extract(FakeCollection(1, "R", lab_notebook_page=[page]),
+                   generic=("lab_notebook_page",)).elements[0]
+    assert rec.property_values == [{"name": "Run.Main solvent", "value": "Ethanol"},
+                                   {"name": "Run.Bad", "value": "kept"}]
+
+
+def test_a_segment_without_a_label_is_named_as_the_client_names_it():
+    unnamed = _generic_json([_select("one", "Main solvent", "h2o")], id=6, segment_klass_id=1,
+                            klass_label=None)
+    named = _generic_json([_select("one", "Main solvent", "etoh")], id=7, segment_klass_id=2,
+                          klass_label="Workup")
+    # The client names a segment by its template's label, None included.
+    elem = FakeSample(1, json_data={"segments": [unnamed, named]},
+                      segments={None: {"Run": {"Main solvent": "h2o"}},
+                                "Workup": {"Run": {"Main solvent": "etoh"}}})
+    rec = _extract(FakeCollection(1, "R", sample=[elem])).elements[0]
+    assert rec.property_values == [{"name": "None / Run / Main solvent", "value": "Water"},
+                                   {"name": "Workup / Run / Main solvent", "value": "Ethanol"}]

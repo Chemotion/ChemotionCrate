@@ -211,3 +211,20 @@ def test_query_ols_label_errors_are_tolerated():
     with patch("requests.get") as get:
         assert query_ols_label("") is None
         get.assert_not_called()
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"side_effect": ConnectionError("no net")},
+    {"return_value": _response(status_error=RuntimeError("HTTP 500"))},
+])
+def test_a_failed_lookup_is_not_cached_and_is_retried(kwargs):
+    cache = OlsCache()
+    with patch("requests.get", **kwargs):
+        assert query_ols("nuclear magnetic resonance", cache=cache) is None
+        assert query_ols_label("http://purl.obolibrary.org/obo/CHMO_0000591", cache=cache) is None
+    assert cache.get("chmo", "nuclear magnetic resonance") == (False, None)
+    docs = [{"iri": "http://purl.obolibrary.org/obo/CHMO_0000591", "label": "NMR"}]
+    with patch("requests.get", return_value=_response(docs)) as get:
+        assert query_ols("nuclear magnetic resonance", cache=cache).label == "NMR"
+        assert query_ols_label("http://purl.obolibrary.org/obo/CHMO_0000591", cache=cache) == "NMR"
+        assert get.call_count == 2

@@ -194,3 +194,123 @@ def test_cell_lines_screens_sbmm_samples_and_vessels_are_exported(instance, tmp_
         if sbmm is not None:
             assert kinds["sequence_based_macromolecule_sample"].source_id == sbmm.id
             assert "P69905" in text
+
+
+def test_derived_amounts_follow_the_eln(instance):
+    """A liquid by volume without a density has no mass; feedstock and gas amounts use the ELN's
+    formulas (R = 0.0821, vessel volume in litres). chemotion-api 401.1.1 got all three wrong."""
+    from chemotion_api.elements.utils import GasType
+
+    from chemotion_crate.extract import extract
+
+    R, T, VESSEL_L, PPM = 0.0821, 294, 0.2, 200
+    col, _ = _fresh_collection(instance, "CRATE_amounts")
+    liquid = col.new_sample_smiles("CCCCCCO")
+    liquid.properties["target_amount"] = {"value": 0.005, "unit": "l"}  # density and molarity unset
+    liquid.save()
+    reaction = col.new_reaction()
+    reaction.reactants.append(col.new_sample_smiles("CC(C)O"))
+    reaction.starting_materials.append(col.new_sample_smiles("[H][H]"))
+    reaction.products.append(col.new_sample_smiles("C"))
+    reaction.save()
+    reaction.gas_schema = True
+    reaction.properties["vessel_size"] = {"amount": VESSEL_L * 1000, "unit": "ml"}
+    reaction.reactants[0].set_ref(True)
+    reaction.reactants[0].set_amount(1, "g")
+    reaction.starting_materials[0].gas_type = GasType.FEEDSTOCK
+    reaction.products[0].gas_type = GasType.GAS
+    reaction.starting_materials[0].set_amount(0.1, "mol")
+    gas_phase = reaction.products[0].properties.get("gas_phase_data")
+    gas_phase.ppm, gas_phase.temperature_in_k = PPM, T
+    reaction.save()
+
+    model = extract(instance, col)
+    assert not model.skipped
+    (liquid_rec,) = [e for e in model.elements if e.kind == "sample" and e.id == liquid.id]
+    assert (liquid_rec.mass_g, liquid_rec.volume_l) == (None, 0.005)
+    (rx,) = [e for e in model.elements if e.kind == "reaction"]
+    (feedstock,) = rx.materials["starting_materials"]
+    assert feedstock.amount_mol == pytest.approx(0.1)
+    assert feedstock.volume_l == pytest.approx(0.1 * R * T)  # V = n·R·T/p, p = 1 atm
+    (gas,) = rx.materials["products"]
+    moles = PPM * VESSEL_L / (R * T * 1e6)
+    assert gas.amount_mol == pytest.approx(moles)
+    assert gas.volume_l == pytest.approx(moles * R * T)
+
+
+def _login():
+    from chemotion_api import Instance
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return Instance(os.environ["CHEMOTION_URL"]).test_connection().login(
+            os.environ["CHEMOTION_USER"], os.environ["CHEMOTION_PASSWORD"])
+
+
+def test_select_multi_and_datetime_range_values_reach_the_crate(instance, tmp_path):
+    """select-multi and datetime-range values (read from the raw fields) and the template
+    release the element and its segment were saved with."""
+    import uuid
+
+    from chemotion_api.labImotion.items.options import FieldType, SaveActionType
+
+    from chemotion_crate.extract import extract
+
+    suffix = uuid.uuid4().hex[:6]
+    name = "crt" + "".join(chr(97 + int(c, 16)) for c in suffix[:4])  # letters only
+    options = {"solv": {"options": [{"key": "h2o", "label": "Water"},
+                                    {"key": "etoh", "label": "Ethanol"}]}}
+    gm = instance.generic_manager()
+    klass = gm.create_new_element(f"CRATE multi {suffix}", "bug", name=name)
+    klass.properties.select_options = options
+    layer = klass.properties.add_new_layer("Run")
+    layer.add_field(FieldType.SELECT_MULTI, "Solvents").option_layers = "solv"
+    layer.add_field(FieldType.DATETIME_RANGE, "Time")
+    klass.save(SaveActionType.MINOR)
+    gm.create_new_segment(f"CRATE seg {suffix}", "", gm.get_element(name))
+    segment = gm.get_segment(f"CRATE seg {suffix}")
+    segment.properties.select_options = options
+    seg_layer = segment.properties.add_new_layer("Work")
+    seg_layer.add_field(FieldType.SELECT_MULTI, "Solvents").option_layers = "solv"
+    seg_layer.add_field(FieldType.DATETIME_RANGE, "Time")
+    seg_layer.add_field(FieldType.DATETIME_RANGE, "Empty")
+    segment.save(SaveActionType.MINOR)
+    segment.is_active = True
+
+    fresh = _login()  # knows the new element class and segment
+    col, _ = _fresh_collection(fresh, "CRATE_generic")
+    elem = col.new_generic(name)
+    elem.name = "multi"
+    elem.save()
+
+    # Set through the client: since chemotion-api 402.0.0 it reads and writes both field types,
+    # so an edit of the raw JSON would be overwritten on save.
+    elem.properties["Run"]["Solvents"] = ["h2o", "etoh"]
+    elem.properties["Run"]["Time"] = {"timeStart": "24/11/2026 10:00:00",
+                                      "timeStop": "24/11/2026 12:30:00",
+                                      "duration": {"value": "2.5", "unit": "h"}}
+    work = elem.segments.get(f"CRATE seg {suffix}")["Work"]
+    work["Solvents"] = ["etoh"]
+    work["Time"] = {"timeStop": "24/11/2026 12:30:00", "duration": {"value": "90", "unit": "min"}}
+    elem.save()
+
+    model = extract(_login(), col)
+    assert not model.skipped
+    (rec,) = [e for e in model.elements if e.kind == name]
+    values = {pv["name"]: pv for pv in rec.property_values}
+    seg = f"CRATE seg {suffix}"
+    assert values["Run.Solvents"]["value"] == "Water, Ethanol"
+    assert values["Run.Time.timeStart"]["value"] == "24/11/2026 10:00:00"
+    assert values["Run.Time.timeStop"]["value"] == "24/11/2026 12:30:00"
+    assert values["Run.Time.duration"] == {"name": "Run.Time.duration", "value": "2.5", "unitText": "h"}
+    assert values[f"{seg} / Work / Solvents"]["value"] == "Ethanol"
+    assert values[f"{seg} / Work / Time.duration"]["unitText"] == "min"
+    assert f"{seg} / Work / Time.timeStart" not in values and not any("Empty" in n for n in values)
+    assert not any("durationCalc" in n for n in values)
+    assert values["template label"]["value"] == f"CRATE multi {suffix}"
+    assert values["template version"]["value"] == gm.get_element(name).version
+    assert values["template uuid"]["value"] == gm.get_element(name).uuid
+    assert values[f"{seg} / template uuid"]["value"] == gm.get_segment(seg).uuid
+
+    out = export(fresh, col, tmp_path / "generic.eln", authors=AUTHORS, ontology_lookup=False)
+    _, text = _metadata(out)
+    assert "Water, Ethanol" in text and "24/11/2026 10:00:00" in text

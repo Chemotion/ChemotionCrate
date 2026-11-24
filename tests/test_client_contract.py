@@ -22,6 +22,7 @@ from chemotion_api.elements.abstract_element import AbstractElement, Analyses, D
 from chemotion_api.elements.attachments import Attachment  # noqa: E402
 from chemotion_api.elements.cell_line import CellLine  # noqa: E402
 from chemotion_api.elements.device_description import DEVICE_FIELDS, DeviceDescription  # noqa: E402
+from chemotion_api.elements.generic_element import GenericElement  # noqa: E402
 from chemotion_api.elements.reaction import Reaction  # noqa: E402
 from chemotion_api.elements.research_plan import ResearchPlan  # noqa: E402
 from chemotion_api.elements.sample import Sample  # noqa: E402
@@ -29,7 +30,12 @@ from chemotion_api.elements.sbmm_sample import SbmmSample  # noqa: E402
 from chemotion_api.elements.screen import Screen  # noqa: E402
 from chemotion_api.elements.wellplate import Wellplate  # noqa: E402
 from chemotion_api.schema_manager import SchemaManager  # noqa: E402
-from chemotion_api.utils import normalise_range_value, quill_to_text  # noqa: E402
+from chemotion_api.utils import (  # noqa: E402
+    add_to_dict,
+    normalise_range_value,
+    parse_generic_object_json,
+    quill_to_text,
+)
 from chemotion_api.utils.withheld import SERVER_MASK, WITHHELD  # noqa: E402
 from chemotion_api.vessels import Vessel, VesselTemplate  # noqa: E402
 
@@ -53,6 +59,7 @@ CLASS_MEMBERS = {
     CellLine: ["material"],
     Screen: ["wellplate_ids", "research_plan_ids"],
     SbmmSample: ["macromolecule"],
+    GenericElement: ["label"],
     Attachment: ["iter_file", "load_file", "get"],
     Analyses: ["get"],
     Connection: ["get", "set_bearer_token"],
@@ -107,6 +114,23 @@ def test_helpers():
     assert all(isinstance(f, str) for f in DEVICE_FIELDS)
 
 
+def test_generic_value_naming():
+    # chemotion-crate names raw select-multi / datetime-range values and raw segments as the
+    # client names its parsed ones: by these two helpers.
+    named: dict = {}
+    assert [add_to_dict(named, "A", 1), add_to_dict(named, "A", 2)] == ["A", "A.1"]
+    layer = {"label": "Run", "position": 1, "fields": [
+        {"field": "t", "label": "Note", "type": "text", "position": 1, "value": "x"},
+        {"field": "s", "label": "Solvents", "type": "select-multi", "position": 2,
+         "sub_fields": [{"value": "w"}]}]}
+    parsed = parse_generic_object_json({"properties": {"layers": {"run": layer}}})
+    assert parsed["values"]["Run"]["Note"] == "x"
+    mapping = parsed["obj_mapping"]["Run"]
+    assert mapping["__key"] == "run" and mapping["Note"] == "t"
+    # a field the client parses through its sub-fields maps as {"__field": key}, others as the key
+    assert mapping["Solvents"] in ({"__field": "s"}, "s")
+
+
 def test_withheld_values_read_as_the_servers_mask():
     # chemotion-crate recognises a withheld value on a restricted element by this text.
     assert SERVER_MASK == "***"
@@ -125,11 +149,33 @@ def test_vessel_fields(cls, names):
     assert set(names) <= fields, f"chemotion-crate reads {cls.__name__}: {set(names) - fields}"
 
 
-@pytest.mark.xfail(strict=True, reason="chemotion-api 401.1.1: converting a mass to a volume with "
-                   "no density and no molarity raises TypeError instead of answering None. "
-                   "chemotion-crate copes (extract.py); when the client is fixed this passes and "
-                   "the strict xfail fails: then drop the xfail and the workaround.")
-def test_an_unconvertible_amount_answers_none():
-    from chemotion_api.elements.utils import QuantityUnit, calculate_quantity
-    assert calculate_quantity(1.0, QuantityUnit.Gram, QuantityUnit.Liter, molecular_weight=100.0,
-                              purity=1.0, density=None, molarity=None) is None
+def _offline_sample(**json_data):
+    """A client Sample built from the client's own empty sample, without a server."""
+    import json
+    from importlib.resources import files
+    from types import SimpleNamespace
+
+    data = json.loads(files("chemotion_api.elements.empty_elements").joinpath("sample.json").read_text())
+    data |= {"id": 1, "molecule": {"id": 1, "molecular_weight": 100.0}} | json_data
+    session = SimpleNamespace(_host_url="http://localhost",
+                              schema_manager=SimpleNamespace(generate_model_type=lambda *_: "t"))
+    return Sample(SimpleNamespace(all_classes=[]), session, json_data=data)
+
+
+@pytest.mark.parametrize("unset", [None, 0], ids=["None", "zero"])
+def test_an_unconvertible_amount_answers_none(unset):
+    # chemotion-crate reads gram, mol and liter and expects None for "not convertible". Density
+    # and molarity 0 are the ELN's defaults; 401.1.1 raised TypeError for None and returned a
+    # volume as a mass for 0.
+    solid = _offline_sample(target_amount_value=1.0, target_amount_unit="g", density=unset,
+                            molarity_value=unset)
+    assert (solid.gram, solid.mol, solid.liter) == (1.0, pytest.approx(0.01), None)
+    liquid = _offline_sample(target_amount_value=0.005, target_amount_unit="l", density=unset,
+                             molarity_value=unset)
+    assert (liquid.gram, liquid.mol, liquid.liter) == (None, None, 0.005)
+
+
+def test_a_molecule_with_a_null_cas_loads():
+    # The ELN sends `cas: [null]`; 401.1.1 refused the molecule, and with it every listed sample.
+    sample = _offline_sample(molecule={"id": 1, "molecular_weight": 100.0, "cas": [None]})
+    assert sample.molecule.get("cas") == [None]
