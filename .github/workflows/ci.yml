@@ -143,7 +143,7 @@ jobs:
       - name: Import the built package
         run: |
           uv run --no-project --python 3.14 --with dist/*.whl python -c \
-            "import chemotion_crate; print('import OK', chemotion_crate.__name__)"
+            "import chemotion_crate; from chemotion_crate.graph import base_context; assert base_context(); print('import and packaged context OK')"
 
       - name: Upload dist
         uses: actions/upload-artifact@v7
