@@ -743,6 +743,9 @@ class ElnCrate:
         # An extracted crate directory is an equally untrusted input. There is no compression
         # ratio to check on disk, so only the size limit applies.
         on_disk = self.path / member
+        # Listing already skips symlinks; this also catches one swapped in after the crate opened.
+        if on_disk.is_symlink() or not on_disk.resolve().is_relative_to(self.path.resolve()):
+            raise ValueError(f"{member} leads outside the crate directory")
         size = on_disk.stat().st_size
         if size > MAX_ZIP_MEMBER_SIZE:
             raise ValueError(
