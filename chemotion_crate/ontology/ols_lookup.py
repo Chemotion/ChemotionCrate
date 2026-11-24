@@ -129,7 +129,7 @@ def query_ols(label: str, ontology: str = "chmo",
                 break
     except Exception as exc:  # network/HTTP/JSON: never fatal
         logger.warning("OLS lookup failed for %r in %s: %s", label, ontology, exc)
-        term = None
+        return None  # not cached: a failed lookup is not an answer, so a later run retries
     if cache is not None:
         cache.put(ontology, label, term)
     return term
@@ -165,7 +165,7 @@ def query_ols_label(iri: str, cache: OlsCache | None = None,
                 break
     except Exception as exc:  # network/HTTP/JSON: never fatal
         logger.warning("OLS label lookup failed for %s: %s", iri, exc)
-        label = None
+        return None  # not cached: a failed lookup is not an answer, so a later run retries
     if cache is not None:
         cache.put(_IRI_LABEL_BUCKET, iri,
                   OntologyTerm(iri=iri, label=label) if label else None)
