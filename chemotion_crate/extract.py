@@ -425,11 +425,6 @@ def _sample_record(elem: Any, host: str | None) -> ElementRecord:
             # gram, mol and liter are views of one withheld amount; name it once.
             if not {"target_amount", "real_amount"} & set(_withheld.get() or ()):
                 _note_withheld("amount")
-        except TypeError as exc:
-            # chemotion-api 401.1.1 raises instead of answering None when a conversion needs a
-            # density or molarity the sample does not have (a solid with only a mass, read as a
-            # volume). Nothing is missing: the amount is simply not convertible.
-            logger.debug("Sample %s: %s not convertible: %s", elem.id, attr, exc)
         except Exception as exc:
             logger.warning("Sample %s: could not read its %s, so it is exported without one: %s",
                            elem.id, attr, exc)
@@ -454,8 +449,9 @@ def _sample_record(elem: Any, host: str | None) -> ElementRecord:
             sum_formular=mol.get("sum_formular") or None,
             iupac_name=mol.get("iupac_name") or None,
             molecular_weight=_float(mol.get("molecular_weight")),
+            # The ELN sends `cas: [null]` for a molecule without one; a None is no CAS number.
             cas=[str(c).strip() for c in (cas if isinstance(cas, list | tuple) else [cas] if cas else [])
-                 if str(c).strip()],
+                 if c is not None and str(c).strip()],
             names=[str(n) for n in ([names] if isinstance(names, str) else names or []) if n],
         )
     return rec
