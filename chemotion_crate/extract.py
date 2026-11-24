@@ -9,6 +9,7 @@ declare what it lacks. ``strict`` exports turn those into errors later, in :func
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -20,7 +21,12 @@ from enum import Enum
 from typing import Any
 
 from chemotion_api.connection import Connection
-from chemotion_api.utils import normalise_range_value, quill_to_text
+from chemotion_api.utils import (
+    add_to_dict,
+    normalise_range_value,
+    parse_generic_object_json,
+    quill_to_text,
+)
 
 from chemotion_crate.model import (
     MODELLED_KINDS,
@@ -386,15 +392,121 @@ def _add_segments(rec: ElementRecord, elem: Any) -> None:
     except Exception as exc:
         logger.debug("%s %s: no segments read: %s", rec.kind, rec.id, exc)
         return
+    raw_segments = _raw_segments(elem)
     for segment, layers in items:
         if segment in ("Properties", "Analyses") or not isinstance(layers, Mapping):
             continue
+        raw = raw_segments.get(segment)
+        raw_values = _raw_generic_values(raw)
         for layer, fields in layers.items():
             if not isinstance(fields, Mapping):
                 continue
             for name, value in fields.items():
+                if (layer, name) in raw_values:  # the raw field is the source for these types
+                    value = raw_values[(layer, name)]
+                if isinstance(value, Mapping) and set(value) == {"timeStart", "timeStop", "duration"}:
+                    # A datetime range: one value per part, as a generic element's are named.
+                    for part, part_value in value.items():
+                        _add_value(rec, f"{segment} / {layer} / {name}.{part}", part_value,
+                                   f"segment {segment}.{layer}.{name}.{part}")
+                    continue
                 _add_value(rec, f"{segment} / {layer} / {name}", value,
                            f"segment {segment}.{layer}.{name}")
+        if raw is not None:
+            for name, value in _template_values(raw.get("klass_uuid"), raw.get("properties_release"),
+                                                f"segment {segment}."):
+                _add_value(rec, f"{segment} / {name}", value, f"segment {segment}.{name}")
+
+
+def _raw_segments(elem: Any) -> dict[str, Mapping]:
+    """The element's raw segments, named as ``elem.segments`` names them: the template's label,
+    with ``.1``, ``.2`` for a repeated one (the client's ``add_to_dict``)."""
+    raw = elem.json_data if isinstance(getattr(elem, "json_data", None), Mapping) else {}
+    named: dict[str, Mapping] = {}
+    for segment in raw.get("segments") or []:
+        if isinstance(segment, Mapping):  # a segment without a label is named as the client names it
+            add_to_dict(named, segment.get("klass_label"), segment)
+    return named
+
+
+#: LabIMotion field types read from the raw field, whatever the client parsed: it gives option keys
+#: for select and select-multi, and before chemotion-api 402.0.0 left select-multi and
+#: datetime-range as None. Both selects are exported alike, as option labels (keys without one).
+_RAW_FIELD_TYPES = ("select", "select-multi", "datetime-range")
+
+
+def _raw_generic_values(data: Any) -> dict[tuple[str, str], Any]:
+    """Values of the select, select-multi and datetime-range fields of a generic element or
+    segment, read from its raw ``properties`` and keyed by the client's ``(layer, field)`` names.
+
+    The names come from the client's own parser, which maps them to layer and field keys, so a
+    repeated label (``Field.1``) finds its own field.
+    """
+    if not isinstance(data, Mapping) or not isinstance(data.get("properties"), Mapping):
+        return {}
+    props = data["properties"]
+    try:
+        # The parser sorts the fields in place; a copy leaves the element's data as it is.
+        mapping = parse_generic_object_json({"properties": copy.deepcopy(props)})["obj_mapping"]
+    except Exception as exc:
+        logger.debug("Generic fields not mapped: %s", exc)
+        return {}
+    release = data.get("properties_release")
+    # The ELN drops select_options from an element's saved properties; its release keeps them.
+    options = {**_mapping(_mapping(release).get("select_options")),
+               **_mapping(props.get("select_options"))}
+    layers = _mapping(props.get("layers"))
+    out: dict[tuple[str, str], Any] = {}
+    for layer, field_keys in mapping.items():
+        if not isinstance(field_keys, Mapping):
+            continue
+        raw_fields = _mapping(layers.get(field_keys.get("__key"))).get("fields") or []
+        for name, key in field_keys.items():
+            key = key.get("__field") if isinstance(key, Mapping) else key
+            field = next((f for f in raw_fields if isinstance(f, Mapping) and f.get("field") == key), None)
+            if name != "__key" and field is not None and field.get("type") in _RAW_FIELD_TYPES:
+                try:
+                    out[(layer, name)] = _sub_field_value(field, options)
+                except Exception as exc:  # a malformed field: the client's value stands
+                    logger.warning("Field %s / %s not read from its raw data: %s", layer, name, exc)
+    return out
+
+
+def _mapping(value: Any) -> Mapping:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _sub_field_value(field: Mapping, options: Mapping) -> Any:
+    """A select's chosen option or a select-multi's chosen options (labels where the template has
+    them, else keys), or a datetime range's start, stop and duration (``durationCalc`` is computed
+    by the UI, not data)."""
+    if isinstance(field.get("sub_fields"), str):  # withheld as a whole: plain() names it
+        return field["sub_fields"]
+    subs = [s for s in field.get("sub_fields") or [] if isinstance(s, Mapping)]
+    if field.get("type") in ("select", "select-multi"):
+        option_set = _mapping(options.get(field.get("option_layers")))
+        labels = {o.get("key"): o.get("label") for o in option_set.get("options") or []
+                  if isinstance(o, Mapping)}
+        if field.get("type") == "select":
+            key = field.get("value")
+            return None if key in (None, "") else str(labels.get(key) or key)
+        keys = dict.fromkeys(s.get("value") for s in subs if s.get("value") not in (None, ""))
+        return [str(labels.get(k) or k) for k in keys]
+    parts = {s.get("col_name"): s for s in subs}
+    duration = parts.get("duration") or {}
+    return {"timeStart": (parts.get("timeStart") or {}).get("value"),
+            "timeStop": (parts.get("timeStop") or {}).get("value"),
+            "duration": {"value": duration.get("value"), "unit": duration.get("value_system")}}
+
+
+def _template_values(klass_uuid: Any, release: Any, field: str = "") -> list[tuple[str, str]]:
+    """The template release a generic element or segment was saved with: its version, and the
+    release's uuid (the record's ``klass_uuid``, which names its ``properties_release``).
+    ``field`` prefixes the names recorded when a value is withheld."""
+    release = _mapping(release)
+    values = [("template version", _str(release.get("version"), f"{field}template version")),
+              ("template uuid", _str(klass_uuid or release.get("uuid"), f"{field}template uuid"))]
+    return [(name, value) for name, value in values if value]
 
 
 def _sample_record(elem: Any, host: str | None) -> ElementRecord:
@@ -714,6 +826,8 @@ def _generic_record(elem: Any, kind: str, host: str | None) -> ElementRecord:
     def _add(name: str, value: Any) -> None:
         if value in (None, "", [], {}):
             return
+        if isinstance(value, Mapping) and "unit" in value and "value" not in value:
+            return  # a quantity whose value was withheld (plain() named it): its unit says nothing
         pv: dict[str, Any] = {"name": name}
         if isinstance(value, Mapping) and "value" in value and "unit" in value:
             if value.get("value") in (None, ""):
@@ -734,8 +848,20 @@ def _generic_record(elem: Any, kind: str, host: str | None) -> ElementRecord:
             pv["value"] = json.dumps(value, ensure_ascii=False, default=str)
         rec.property_values.append(pv)
 
+    raw = elem.json_data if isinstance(elem.json_data, Mapping) else {}
+    for (layer, field), value in _raw_generic_values(raw).items():
+        fields = props.get(layer)
+        if isinstance(fields, dict) and field in fields:  # the raw field is the source for these
+            fields[field] = plain(value, f"{layer}.{field}")
     for key, value in props.items():
         _add(str(key), value)
+    try:
+        label = elem.label  # the client's: the template's label, from element_klass
+    except Exception:  # element_klass is null on an element shared below full detail level
+        label = None
+    template = [("template label", _str(label, "template label")),
+                *_template_values(raw.get("klass_uuid"), raw.get("properties_release"))]
+    rec.property_values += [{"name": name, "value": value} for name, value in template if value]
     return rec
 
 
