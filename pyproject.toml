@@ -1,6 +1,6 @@
 [project]
 name = "chemotion-crate"
-version = "401.11.0"
+version = "402.0.0"
 description = "Export a Chemotion ELN collection as an .eln RO-Crate, and read one back"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
@@ -16,7 +16,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
 dependencies = [
-    "chemotion-api==401.1.1",
+    "chemotion-api==402.0.0",
     "rdflib>=7.1.3,<8",
     "linkml-runtime>=1.9.4",
     "chem-dcat-ap>=0.1.0rc4,<0.2.0",

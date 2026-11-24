@@ -2,7 +2,7 @@
 
 Export a [Chemotion ELN](https://chemotion.net) collection as an `.eln` file, and read such files back.
 
-An `.eln` file is a ZIP holding an [RO-Crate 1.2](https://w3id.org/ro/crate/1.2) that follows [TheELNFileFormat](https://github.com/TheELNConsortium/TheELNFileFormat) profile `1.2+20260923`. Samples and reactions are typed with [chem-dcat-ap](https://github.com/nfdi-de/chem-dcat-ap). The exporter talks to the ELN only through its REST API, via the [`chemotion-api`](https://github.com/Chemotion/ChemotionAPI) client (== 401.1.1).
+An `.eln` file is a ZIP holding an [RO-Crate 1.2](https://w3id.org/ro/crate/1.2) that follows [TheELNFileFormat](https://github.com/TheELNConsortium/TheELNFileFormat) profile `1.2+20260923`. Samples and reactions are typed with [chem-dcat-ap](https://github.com/nfdi-de/chem-dcat-ap). The exporter talks to the ELN only through its REST API, via the [`chemotion-api`](https://github.com/Chemotion/ChemotionAPI) client (== 402.0.0).
 
 ## Install
 
@@ -11,19 +11,19 @@ pip install chemotion-crate                 # or: uv add chemotion-crate
 pip install "chemotion-crate[interactive]"  # with tqdm progress bars
 ```
 
-Requires Python 3.14. Verified against Chemotion ELN v4.0.1 and v4.0.2.
+Requires Python 3.14. Verified against Chemotion ELN v4.0.2.
 
 ## Versions
 
-chemotion-crate's version follows the ELN and the chemotion-api release it is built on. `401.11.0` reads:
+chemotion-crate's version names the ELN line it is built for; the rest is its own. `402.0.0` reads:
 
 | Part | Here | Meaning |
 |---|---|---|
-| first | `401` | the ELN line, shared with chemotion-api: ELN v4.0.1 (chemotion-api 401.x) |
-| second | `11` | the chemotion-api release it is built and tested on, minor and patch written together: 401.**1**.**1** → `11` (401.0.0 would be `00`, written `0`) |
-| third | `0` | chemotion-crate's own releases on that base: fixes and additions |
+| first | `402` | the ELN line, shared with chemotion-api: ELN v4.0.2 (chemotion-api 402.x) |
+| second | `0` | chemotion-crate's own minor release: additions, and every move to another chemotion-api release |
+| third | `0` | chemotion-crate's own patch release: fixes |
 
-So `401.11.2` is the third chemotion-crate release built on chemotion-api 401.1.1. A later ELN line starts a new first number (402.x for ELN v4.0.2 once chemotion-api has a 402 line). chemotion-api is pinned to exactly the release the version names (`chemotion-api==401.1.1`); a new chemotion-api release means a new chemotion-crate release.
+chemotion-api is pinned exactly in the package's dependencies (`chemotion-api==402.0.0` here), so a new chemotion-api release means a new chemotion-crate release, at least a minor one; the changelog names the pin of each release, and every exported `.eln` records the chemotion-api version that made it. A new ELN line starts a new first number.
 
 ## Quick start
 

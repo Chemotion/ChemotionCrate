@@ -8,7 +8,7 @@ Python 3.14 and [uv](https://docs.astral.sh/uv/); [just](https://just.systems) r
 just sync      # uv sync --all-extras --group dev
 ```
 
-`chemotion-api` (== 401.1.1) comes from PyPI like every other dependency, and `uv.lock` pins it. To work against an unreleased client, point `[tool.uv.sources]` at a local checkout of [Chemotion/ChemotionAPI](https://github.com/Chemotion/ChemotionAPI) for the session, and do not commit that override.
+`chemotion-api` (== 402.0.0) comes from PyPI like every other dependency, and `uv.lock` pins it. To work against an unreleased client, point `[tool.uv.sources]` at a local checkout of [Chemotion/ChemotionAPI](https://github.com/Chemotion/ChemotionAPI) for the session, and do not commit that override.
 
 ## Gates
 
@@ -31,7 +31,7 @@ The second user receives a share below full detail level, so the restricted-elem
 
 ## The chemotion-api contract
 
-chemotion-crate reads the ELN only through chemotion-api, and only through the names in `tests/test_client_contract.py`. Using a new client name means adding it there. chemotion-api is pinned exactly (`==401.1.1`, the release named in the version). `just client-latest` runs the contract and the offline suite against the newest chemotion-api on PyPI in a throwaway environment, ignoring the pin; CI does the same weekly (job `client-latest`) as an early warning that does not gate releases.
+chemotion-crate reads the ELN only through chemotion-api, and only through the names in `tests/test_client_contract.py`. Using a new client name means adding it there. chemotion-api is pinned exactly (`==402.0.0`) to a release of the ELN line the version names; `tests/test_version.py` checks that. Moving the pin is at least a minor release, and the changelog names the new pin. `just client-latest` runs the contract and the offline suite against the newest chemotion-api on PyPI in a throwaway environment, ignoring the pin; CI does the same weekly (job `client-latest`) as an early warning that does not gate releases.
 
 ## Conformance
 

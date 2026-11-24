@@ -186,7 +186,7 @@ wheels = [
 
 [[package]]
 name = "chemotion-api"
-version = "401.1.1"
+version = "402.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -198,14 +198,14 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/59/2893b835c8f1ea999cdd00754398e74c7a7aed2bece0afe5bf1612cc9c0f/chemotion_api-401.1.1.tar.gz", hash = "sha256:2f97f4b007dfbee3727e5de9d04e34b9d70bb1f2e9f4b39d5aac4dc1ae1916a7", size = 1166084, upload-time = "2026-11-17T05:51:17.647Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/23/e67756d7de466dae323d787005178dda1b11559464e400690bb653649c1d/chemotion_api-402.0.0.tar.gz", hash = "sha256:ce6159ede622ded03b10a533e8b2cda28c8b04f083df2eaaa3fb762c2b1d5d79", size = 1192436, upload-time = "2026-11-25T05:29:37.756Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2d/8a/2245f498ee97581e80b76c4ac3ffc1c2051cf64f983b265521a0ac6e71b7/chemotion_api-401.1.1-py3-none-any.whl", hash = "sha256:c1d524f59448473b31ee2ddc72252f252e734e9f29fe1e6e2c16cbe488f91eb5", size = 356348, upload-time = "2026-11-17T05:51:16.101Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/66/b9a428d2d3651b3fad471b41a00b0fd98d1d1d153ff1151bbbc0e32538dc/chemotion_api-402.0.0-py3-none-any.whl", hash = "sha256:54423c1c0bc88cbd65d57f18a64b239e9637ddeb8210411b415ef817a6910a27", size = 363008, upload-time = "2026-11-25T05:29:35.904Z" },
 ]
 
 [[package]]
 name = "chemotion-crate"
-version = "401.11.0"
+version = "402.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyascii" },
@@ -239,7 +239,7 @@ dev = [
 requires-dist = [
     { name = "anyascii", specifier = ">=0.3.3" },
     { name = "chem-dcat-ap", specifier = ">=0.1.0rc4,<0.2.0" },
-    { name = "chemotion-api", specifier = "==401.1.1" },
+    { name = "chemotion-api", specifier = "==402.0.0" },
     { name = "curies", specifier = ">=0.10" },
     { name = "dcat-ap-plus", specifier = ">=0.1.0rc4,<0.2.0" },
     { name = "idutils", specifier = ">=1.4" },
