@@ -32,6 +32,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/Chemotion/ChemotionCrate"
+Documentation = "https://chemotioncrate.readthedocs.io"
 Source = "https://github.com/Chemotion/ChemotionCrate"
 Issues = "https://github.com/Chemotion/ChemotionCrate/issues"
 Changelog = "https://github.com/Chemotion/ChemotionCrate/blob/main/CHANGELOG.md"
@@ -45,6 +46,13 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.14",
     "pyshacl>=0.31.0",
+]
+docs = [
+    # autodoc imports the package, so the docs are built in the project environment (`just docs`,
+    # and Read the Docs via `uv sync --group docs`).
+    "sphinx>=8.2",
+    "sphinx-rtd-theme>=3",
+    "myst-parser>=4",
 ]
 
 [build-system]

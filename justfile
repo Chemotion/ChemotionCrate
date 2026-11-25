@@ -25,6 +25,10 @@ mypy:
 test:
     uv run pytest
 
+# build the documentation into docs/_build/html, warnings as errors (as Read the Docs does)
+docs:
+    uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html
+
 # ruff + mypy
 static: lint mypy
 

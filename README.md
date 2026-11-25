@@ -4,6 +4,8 @@ Export a [Chemotion ELN](https://chemotion.net) collection as an `.eln` file, an
 
 An `.eln` file is a ZIP holding an [RO-Crate 1.2](https://w3id.org/ro/crate/1.2) that follows [TheELNFileFormat](https://github.com/TheELNConsortium/TheELNFileFormat) profile `1.2+20260923`. Samples and reactions are typed with [chem-dcat-ap](https://github.com/nfdi-de/chem-dcat-ap). The exporter talks to the ELN only through its REST API, via the [`chemotion-api`](https://github.com/Chemotion/ChemotionAPI) client (== 402.0.0).
 
+Documentation: <https://chemotioncrate.readthedocs.io>
+
 ## Install
 
 ```sh
