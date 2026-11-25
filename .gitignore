@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.eln
+# conformance crates (just conformance), writer staging dirs and partial downloads
+conformance*.eln
+.*.staging/
+*.part
+# private working notes
+AI/
+# `just client-latest` throwaway environment
+.client-latest/
